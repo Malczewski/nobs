@@ -2,7 +2,8 @@
 
 A Telethon user client listens for new messages in TELEGRAM_SOURCE_CHANNEL.
 Each message is evaluated by Gemini ({"keep": bool, "reason": str}); kept ones
-are immediately re-posted to the destination channel via the bot.
+are optionally rewritten by Gemini (monitor.transform_prompt) to strip fluff,
+then immediately re-posted to the destination channel via the bot.
 
 Config (the evaluation prompt) is re-read per message — but TTL-cached in
 ConfigLoader so edits in GCS apply within ~1 minute without a restart.
@@ -100,8 +101,19 @@ class ChannelMonitor:
         reason = verdict.get("reason", "")
         logger.info("Message %s keep=%s reason=%s", msg_id, keep, reason)
 
-        if keep:
-            await self._forward(text)
+        if not keep:
+            return
+
+        out_text = text
+        if config.transform_prompt.strip():
+            try:
+                out_text = await self._transform(config.model, config.transform_prompt, text)
+            except Exception:
+                # Transform is best-effort: on failure, forward the original so
+                # the message isn't lost.
+                logger.exception("Transform failed for %s; forwarding original", msg_id)
+                out_text = text
+        await self._forward(out_text)
 
     async def _evaluate(self, model: str, prompt: str, text: str) -> dict:
         full_prompt = (
@@ -113,6 +125,17 @@ class ChannelMonitor:
         if not isinstance(result, dict):
             raise ValueError(f"Expected JSON object, got: {type(result)}")
         return result
+
+    async def _transform(self, model: str, prompt: str, text: str) -> str:
+        full_prompt = (
+            f"{prompt}\n\n"
+            "Return ONLY the rewritten message text, with no preamble, labels, "
+            "or code fences.\n\n"
+            f"Message:\n{text}"
+        )
+        result = (await self._gemini.generate(model, full_prompt)).strip()
+        # Guard against an empty model response wiping the message.
+        return result or text
 
     async def _forward(self, text: str) -> None:
         await self._publisher.send_plain(self._target_channel_id, text)

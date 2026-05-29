@@ -53,3 +53,11 @@ monitor:
     crypto/giveaway spam, vague teasers, and low-information posts. Keep only
     substantive, informative content. Explain your decision in one short
     sentence.
+
+  # Optional. Applied ONLY to messages that pass the filter, right before
+  # forwarding. Leave empty to forward the original text unchanged.
+  transform_prompt: >
+    Rewrite this message into a concise, useful note. Strip filler, hype,
+    emojis, hashtags, calls to action, self-promotion and "subscribe" lines.
+    Keep the core facts, names, numbers and any links intact. Preserve the
+    original language. Output only the cleaned-up text.

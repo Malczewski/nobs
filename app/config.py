@@ -51,6 +51,9 @@ class MonitorConfig:
     enabled: bool = True
     model: str = "gemini-2.5-flash"
     evaluate_prompt: str = ""
+    # Optional: rewrite kept messages into a more useful form before forwarding.
+    # If empty, the original message text is forwarded unchanged.
+    transform_prompt: str = ""
 
 
 @dataclass
@@ -88,6 +91,7 @@ class AppConfig:
             enabled=bool(monitor_raw.get("enabled", True)),
             model=str(monitor_raw.get("model", "gemini-2.5-flash")),
             evaluate_prompt=str(monitor_raw.get("evaluate_prompt", "")),
+            transform_prompt=str(monitor_raw.get("transform_prompt", "")),
         )
         return cls(digest=digest, monitor=monitor)
 
