@@ -1,0 +1,10 @@
+.env
+scripts/deploy.env
+secrets/
+*.session
+*.db
+__pycache__/
+*.pyc
+.venv/
+venv/
+.DS_Store
