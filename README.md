@@ -148,6 +148,9 @@ bucket — granted via `--scopes=storage-ro` + a suitable SA). Locally, point
 - **Backoff**: Gemini 429/5xx are retried with exponential backoff + jitter
   (up to 6 attempts) before bubbling up.
 - **Failure alerts**: if the daily digest throws, an alert is posted to the channel.
+- **Forwarding**: kept messages are re-posted via the bot as text with a
+  "🔗 Original" link back to the source message. Media is not re-uploaded (kept
+  lightweight for the small VM); messages with no text/caption are skipped.
 - **Config TTL**: the monitor can be chatty, so config is cached briefly instead
   of fetching from GCS on literally every message. Set `CONFIG_TTL_SECONDS=0` to
   disable caching.

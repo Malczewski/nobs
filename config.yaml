@@ -30,19 +30,32 @@ digest:
         releases, funding rounds, or trivial updates. Skip unnecessary details
         like prices, versions, abbreviations.
 
-    - url: "https://www.theverge.com/rss/index.xml"
-      label: "📱 Gadgets & Culture"
+    - url: "https://www.sciencedaily.com/rss/all.xml"
+      label: "🔬 Science"
       max_items: 30
       prompt: >
-        Pick up to 3 stories with real cultural or industry impact. Ignore
-        routine reviews, deals, and rumor roundups.
+        Summarize up to 3 groundbreaking scientific developments 
+        that shift current understanding or open new global possibilities. 
+        Only include discoveries or achievements with profound implications. 
+        Exclude minor studies, academic noise, or numerical findings without wide relevance.
 
-    - url: "https://feeds.arstechnica.com/arstechnica/index"
-      label: "🔬 Science & Deep Tech"
+    - url: "https://www.ft.com/?format=rss"
+      label: "💰 Finance"
       max_items: 30
       prompt: >
-        Select up to 3 items with genuine scientific or engineering
-        significance. Skip op-eds and consumer buying guides.
+        From this finance news list, extract up to 3 globally significant 
+        developments—major economic shifts, crashes, reforms, or moves by central banks 
+        or major economies. Skip over startup funding, regional data, or routine market movements. 
+        Focus only on events with massive worldwide financial impact.
+    
+    - url: "http://feeds.bbci.co.uk/news/world/rss.xml"
+      label: "🌍 World/Politics"
+      max_items: 30
+      prompt: >
+        Summarize the following list of news titles and descriptions. 
+        Return up to 3 world-shaking events only—focus on major geopolitical developments, 
+        conflicts, treaties, or leadership changes. Give more attention to Ukraine and Poland. 
+        Ignore minor updates, local issues, or statistical reports.
 
 monitor:
   enabled: true

@@ -3,7 +3,8 @@
 A Telethon user client listens for new messages in TELEGRAM_SOURCE_CHANNEL.
 Each message is evaluated by Gemini ({"keep": bool, "reason": str}); kept ones
 are optionally rewritten by Gemini (monitor.transform_prompt) to strip fluff,
-then immediately re-posted to the destination channel via the bot.
+then immediately re-posted to the destination channel via the bot, with a link
+back to the original message. Media is not re-uploaded (the link covers it).
 
 Config (the evaluation prompt) is re-read per message — but TTL-cached in
 ConfigLoader so edits in GCS apply within ~1 minute without a restart.
@@ -11,6 +12,7 @@ ConfigLoader so edits in GCS apply within ~1 minute without a restart.
 
 from __future__ import annotations
 
+import html
 import logging
 
 from telethon import TelegramClient, events
@@ -80,9 +82,10 @@ class ChannelMonitor:
         if self._store.is_seen(DEDUP_NAMESPACE, msg_id):
             return
 
+        # For media messages, message.message holds the caption (if any).
         text = message.message or ""
         if not text.strip():
-            # Nothing to evaluate (pure media/sticker). Mark seen and skip.
+            # No text/caption to evaluate (pure media/sticker). Mark seen and skip.
             self._store.mark_seen(DEDUP_NAMESPACE, msg_id)
             return
 
@@ -113,7 +116,9 @@ class ChannelMonitor:
                 # the message isn't lost.
                 logger.exception("Transform failed for %s; forwarding original", msg_id)
                 out_text = text
-        await self._forward(out_text)
+
+        link = await self._message_link(event)
+        await self._forward(out_text, link=link)
 
     async def _evaluate(self, model: str, prompt: str, text: str) -> dict:
         full_prompt = (
@@ -137,8 +142,29 @@ class ChannelMonitor:
         # Guard against an empty model response wiping the message.
         return result or text
 
-    async def _forward(self, text: str) -> None:
-        await self._publisher.send_plain(self._target_channel_id, text)
+    async def _message_link(self, event: events.NewMessage.Event) -> str | None:
+        """Build a public/private t.me link to the original message."""
+        msg_id = event.message.id
+        try:
+            chat = await event.get_chat()
+        except Exception:
+            chat = getattr(event, "chat", None)
+
+        username = getattr(chat, "username", None) if chat else None
+        if username:
+            return f"https://t.me/{username}/{msg_id}"
+
+        # Private channel: https://t.me/c/<internal_id>/<msg_id>
+        cid = str(event.chat_id)
+        if cid.startswith("-100"):
+            return f"https://t.me/c/{cid[4:]}/{msg_id}"
+        return None
+
+    async def _forward(self, text: str, *, link: str | None = None) -> None:
+        body = html.escape(text)
+        if link:
+            body = f'{body}\n\n🔗 <a href="{html.escape(link, quote=True)}">Original</a>'
+        await self._publisher.send(self._target_channel_id, body, disable_preview=True)
 
     async def disconnect(self) -> None:
         await self._client.disconnect()

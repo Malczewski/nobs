@@ -6,6 +6,7 @@ forwarder. Long digests are split to respect Telegram's 4096-char limit.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from telegram import Bot
@@ -37,8 +38,6 @@ class Publisher:
                 disable_web_page_preview=disable_preview,
             )
         except RetryAfter as exc:
-            import asyncio
-
             logger.warning("Telegram rate limited; sleeping %ss", exc.retry_after)
             await asyncio.sleep(exc.retry_after + 1)
             await self._bot.send_message(

@@ -41,7 +41,7 @@ class DigestConfig:
     minute: int = 0
     timezone: str = "Europe/Kyiv"
     language: str = "Ukrainian"
-    model: str = "gemini-2.5-flash"
+    model: str = "gemini-3.5-flash"
     summarize_prompt: str = ""
     sources: list[Source] = field(default_factory=list)
 
@@ -49,7 +49,7 @@ class DigestConfig:
 @dataclass
 class MonitorConfig:
     enabled: bool = True
-    model: str = "gemini-2.5-flash"
+    model: str = "gemini-3.5-flash"
     evaluate_prompt: str = ""
     # Optional: rewrite kept messages into a more useful form before forwarding.
     # If empty, the original message text is forwarded unchanged.
@@ -81,7 +81,7 @@ class AppConfig:
             minute=int(sched.get("minute", 0)),
             timezone=str(sched.get("timezone", "Europe/Kyiv")),
             language=str(digest_raw.get("language", "Ukrainian")),
-            model=str(digest_raw.get("model", "gemini-2.5-flash")),
+            model=str(digest_raw.get("model", "gemini-3.5-flash")),
             summarize_prompt=str(digest_raw.get("summarize_prompt", "")),
             sources=sources,
         )
@@ -89,7 +89,7 @@ class AppConfig:
         monitor_raw = raw.get("monitor", {}) or {}
         monitor = MonitorConfig(
             enabled=bool(monitor_raw.get("enabled", True)),
-            model=str(monitor_raw.get("model", "gemini-2.5-flash")),
+            model=str(monitor_raw.get("model", "gemini-3.5-flash")),
             evaluate_prompt=str(monitor_raw.get("evaluate_prompt", "")),
             transform_prompt=str(monitor_raw.get("transform_prompt", "")),
         )
