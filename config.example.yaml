@@ -1,0 +1,55 @@
+# NOBS runtime config. Upload to GCS as config.yaml; edits apply without redeploy.
+# Secrets/IDs live in env vars, NOT here.
+
+digest:
+  schedule:
+    hour: 8          # 24h clock, in the timezone below
+    minute: 0
+    timezone: "Europe/Kyiv"
+  language: "Ukrainian"   # all output is translated to this language
+  model: "gemini-2.5-flash"
+  lookback_hours: 24      # default window: only consider entries from the last day
+                          # (per-source overridable; max_items is just a safety cap)
+
+  # Applied after each source's own prompt to compress everything into one
+  # structured payload that the renderer turns into a message.
+  summarize_prompt: >
+    Return a JSON array of objects with exactly 3 fields: title, link, summary.
+    Be short and concise: squeeze the title into a few words and rephrase the
+    description into a brief summary. Skip prices, version numbers and
+    abbreviations. Use only the items provided.
+
+  sources:
+    - url: "https://techcrunch.com/feed/"
+      label: "💻 Tech"
+      max_items: 30
+      lookback_hours: 24   # optional per-source override
+      prompt: >
+        From this list of tech news, extract up to 3 breakthrough events that
+        could redefine industries or the digital world. Disregard product
+        releases, funding rounds, or trivial updates. Skip unnecessary details
+        like prices, versions, abbreviations.
+
+    - url: "https://www.theverge.com/rss/index.xml"
+      label: "📱 Gadgets & Culture"
+      max_items: 30
+      prompt: >
+        Pick up to 3 stories with real cultural or industry impact. Ignore
+        routine reviews, deals, and rumor roundups.
+
+    - url: "https://feeds.arstechnica.com/arstechnica/index"
+      label: "🔬 Science & Deep Tech"
+      max_items: 30
+      prompt: >
+        Select up to 3 items with genuine scientific or engineering
+        significance. Skip op-eds and consumer buying guides.
+
+monitor:
+  enabled: true
+  model: "gemini-2.5-flash"
+  evaluate_prompt: >
+    You are a strict content filter for a curated channel. Decide whether the
+    following message is worth forwarding. Reject clickbait, rage-bait, ads,
+    crypto/giveaway spam, vague teasers, and low-information posts. Keep only
+    substantive, informative content. Explain your decision in one short
+    sentence.

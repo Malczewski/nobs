@@ -1,0 +1,13 @@
+.git
+.gitignore
+.venv
+venv
+__pycache__
+*.pyc
+*.db
+*.session
+.env.example
+config.example.yaml
+README.md
+scripts
+terminals

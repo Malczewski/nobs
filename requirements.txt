@@ -1,0 +1,9 @@
+# Core runtime dependencies
+python-telegram-bot==21.6
+telethon==1.36.0
+google-generativeai==0.8.3
+feedparser==6.0.11
+APScheduler==3.10.4
+google-cloud-storage==2.18.2
+PyYAML==6.0.2
+tenacity==9.0.0
