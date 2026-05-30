@@ -12,8 +12,10 @@ ConfigLoader so edits in GCS apply within ~1 minute without a restart.
 
 from __future__ import annotations
 
+import asyncio
 import html
 import logging
+from datetime import datetime, timedelta, timezone
 
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
@@ -26,6 +28,10 @@ from .telegram_bot import Publisher
 logger = logging.getLogger(__name__)
 
 DEDUP_NAMESPACE = "tg_monitor"
+
+# On startup, look back this many hours and process any messages we missed
+# while down. Dedup (SeenStore) makes this idempotent across restarts.
+BACKFILL_HOURS = 12
 
 
 def _resolve_source(value: str):
@@ -59,14 +65,27 @@ class ChannelMonitor:
         self._store = store
         self._publisher = publisher
         self._target_channel_id = target_channel_id
+        self._entity = None
+        self._backfill_task: asyncio.Task | None = None
 
     async def start(self) -> None:
         await self._client.start()  # uses the StringSession; non-interactive
-        entity = await self._client.get_entity(self._source_channel)
+        # Prime the session's dialog/state cache. With a StringSession that has
+        # never fetched dialogs, Telethon may not apply the update stream for a
+        # channel (so NewMessage never fires) even though get_entity() resolves
+        # it and the account is subscribed. get_dialogs() registers the channel
+        # so its pushed updates are delivered to the handler.
+        await self._client.get_dialogs()
+        self._entity = await self._client.get_entity(self._source_channel)
         self._client.add_event_handler(
-            self._on_new_message, events.NewMessage(chats=entity)
+            self._on_new_message, events.NewMessage(chats=self._entity)
         )
         logger.info("Monitor listening on source channel: %s", self._source_channel)
+
+        # Catch up on anything posted while we were down. Run it in the
+        # background so realtime handling starts immediately; dedup prevents
+        # double-processing if a message also arrives via the live stream.
+        self._backfill_task = asyncio.create_task(self._backfill(BACKFILL_HOURS))
 
     async def run_forever(self) -> None:
         await self.start()
@@ -77,8 +96,45 @@ class ChannelMonitor:
         return self._client.run_until_disconnected()
 
     async def _on_new_message(self, event: events.NewMessage.Event) -> None:
-        message = event.message
-        msg_id = f"{event.chat_id}:{message.id}"
+        chat = await event.get_chat()
+        await self._process_message(event.message, chat)
+
+    async def _backfill(self, hours: int) -> None:
+        """Process messages from the last `hours` hours, oldest first.
+
+        Runs once on startup. Relies on SeenStore for idempotency, so messages
+        already handled (in a previous run or via the live stream) are skipped.
+        """
+        if not self._config_loader.get().monitor.enabled:
+            logger.info("Backfill skipped: monitor disabled")
+            return
+
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+        recent = []
+        try:
+            async for message in self._client.iter_messages(self._entity):
+                if message.date < cutoff:
+                    break
+                recent.append(message)
+        except Exception:
+            logger.exception("Backfill: failed to fetch recent messages")
+            return
+
+        logger.info(
+            "Backfill: found %d message(s) in the last %dh", len(recent), hours
+        )
+        # iter_messages yields newest→oldest; process oldest first so forwarded
+        # posts keep their chronological order in the destination.
+        for message in reversed(recent):
+            try:
+                await self._process_message(message, self._entity)
+            except Exception:
+                logger.exception("Backfill: failed to process message %s", message.id)
+        logger.info("Backfill: complete")
+
+    async def _process_message(self, message, chat) -> None:
+        msg_id = f"{message.chat_id}:{message.id}"
+        logger.debug("Processing message %s", msg_id)
         if self._store.is_seen(DEDUP_NAMESPACE, msg_id):
             return
 
@@ -117,7 +173,7 @@ class ChannelMonitor:
                 logger.exception("Transform failed for %s; forwarding original", msg_id)
                 out_text = text
 
-        link = await self._message_link(event)
+        link = self._message_link(chat, message.chat_id, message.id)
         await self._forward(out_text, link=link)
 
     async def _evaluate(self, model: str, prompt: str, text: str) -> dict:
@@ -142,20 +198,14 @@ class ChannelMonitor:
         # Guard against an empty model response wiping the message.
         return result or text
 
-    async def _message_link(self, event: events.NewMessage.Event) -> str | None:
+    def _message_link(self, chat, chat_id, msg_id: int) -> str | None:
         """Build a public/private t.me link to the original message."""
-        msg_id = event.message.id
-        try:
-            chat = await event.get_chat()
-        except Exception:
-            chat = getattr(event, "chat", None)
-
         username = getattr(chat, "username", None) if chat else None
         if username:
             return f"https://t.me/{username}/{msg_id}"
 
         # Private channel: https://t.me/c/<internal_id>/<msg_id>
-        cid = str(event.chat_id)
+        cid = str(chat_id)
         if cid.startswith("-100"):
             return f"https://t.me/c/{cid[4:]}/{msg_id}"
         return None
@@ -167,4 +217,6 @@ class ChannelMonitor:
         await self._publisher.send(self._target_channel_id, body, disable_preview=True)
 
     async def disconnect(self) -> None:
+        if self._backfill_task and not self._backfill_task.done():
+            self._backfill_task.cancel()
         await self._client.disconnect()
