@@ -7,7 +7,7 @@ digest:
     minute: 13
     timezone: "Europe/Kyiv"
   language: "Ukrainian"   # all output is translated to this language
-  model: "gemini-3.5-flash"
+  model: "gemini-3.1-flash-lite"
   lookback_hours: 24      # default window: only consider entries from the last day
                           # (per-source overridable; max_items is just a safety cap)
 
@@ -59,7 +59,7 @@ digest:
 
 monitor:
   enabled: true
-  model: "gemini-3.5-flash"
+  model: "gemini-3.1-flash-lite"
   evaluate_prompt: >
     You are a strict content filter for a curated channel. Decide whether the
     following message is worth forwarding. Reject clickbait, rage-bait, ads,
