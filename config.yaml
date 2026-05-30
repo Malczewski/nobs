@@ -65,7 +65,7 @@ monitor:
     following message is worth forwarding. Reject clickbait, rage-bait, ads,
     crypto/giveaway spam, vague teasers, and low-information posts. Keep only
     substantive, informative content. Explain your decision in one short
-    sentence.
+    sentence. Ignore promotional link - it's present in each message.
 
   # Optional. Applied ONLY to messages that pass the filter, right before
   # forwarding. Leave empty to forward the original text unchanged.
