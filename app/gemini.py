@@ -82,17 +82,28 @@ def _retry_after_seconds(exc: BaseException | None) -> float | None:
     return None
 
 
-def _is_retryable(exc: BaseException) -> bool:
-    """Retry transient/per-minute errors, but not a per-day quota exhaustion.
+# Substrings identifying a 429 that won't clear on its own: a fixed quota/
+# balance that only changes via manual action (wait a day, or fix billing),
+# never via a short backoff. Matched against str(exc) since these come back
+# as plain error text, not a structured, reliably-typed field.
+_UNRECOVERABLE_MARKERS = (
+    "PerDay",  # e.g. GenerateRequestsPerDayPerProjectPerModel-FreeTier
+    "prepayment credits are depleted",  # billing balance exhausted, needs a top-up
+)
 
-    A daily quota (e.g. "GenerateRequestsPerDayPerProjectPerModel-FreeTier")
-    won't reset within this process's backoff window, so retrying just burns
-    attempts and time for a guaranteed failure. Fail fast instead so the
-    caller (daily digest) can decide on a longer-scale retry.
+
+def _is_retryable(exc: BaseException) -> bool:
+    """Retry transient/per-minute errors, but not a quota/billing dead end.
+
+    A per-day quota or a depleted prepayment balance won't clear within this
+    process's backoff window, so retrying just burns attempts and time for a
+    guaranteed failure. Fail fast instead so the caller (daily digest) can
+    decide on a longer-scale retry.
     """
     if not isinstance(exc, _RETRYABLE):
         return False
-    if "PerDay" in str(exc):
+    text = str(exc)
+    if any(marker in text for marker in _UNRECOVERABLE_MARKERS):
         return False
     return True
 

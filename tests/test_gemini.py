@@ -25,6 +25,14 @@ def test_is_retryable_false_for_daily_quota():
     assert gm._is_retryable(exc) is False
 
 
+def test_is_retryable_false_for_depleted_prepayment_credits():
+    exc = gexc.ResourceExhausted(
+        "Your prepayment credits are depleted. Please go to AI Studio at "
+        "https://ai.studio/projects to manage your project and billing."
+    )
+    assert gm._is_retryable(exc) is False
+
+
 def test_is_retryable_false_for_non_retryable_exception_types():
     assert gm._is_retryable(ValueError("not a gemini error")) is False
 
