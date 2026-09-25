@@ -19,7 +19,7 @@ from google.api_core import exceptions as gexc
 from tenacity import (
     before_sleep_log,
     retry,
-    retry_if_exception_type,
+    retry_if_exception,
     stop_after_attempt,
     wait_exponential_jitter,
 )
@@ -82,6 +82,21 @@ def _retry_after_seconds(exc: BaseException | None) -> float | None:
     return None
 
 
+def _is_retryable(exc: BaseException) -> bool:
+    """Retry transient/per-minute errors, but not a per-day quota exhaustion.
+
+    A daily quota (e.g. "GenerateRequestsPerDayPerProjectPerModel-FreeTier")
+    won't reset within this process's backoff window, so retrying just burns
+    attempts and time for a guaranteed failure. Fail fast instead so the
+    caller (daily digest) can decide on a longer-scale retry.
+    """
+    if not isinstance(exc, _RETRYABLE):
+        return False
+    if "PerDay" in str(exc):
+        return False
+    return True
+
+
 def _wait_for_retry(retry_state) -> float:
     """Wait the server-suggested delay if present, else exponential backoff.
 
@@ -113,7 +128,7 @@ class GeminiClient:
         self._last_request_at = 0.0
 
     @retry(
-        retry=retry_if_exception_type(_RETRYABLE),
+        retry=retry_if_exception(_is_retryable),
         wait=_wait_for_retry,
         stop=stop_after_attempt(_RETRY_ATTEMPTS),
         before_sleep=before_sleep_log(logger, logging.WARNING),
