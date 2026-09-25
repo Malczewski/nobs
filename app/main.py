@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -27,7 +28,7 @@ from .storage import SeenStore
 from .telegram_bot import Publisher
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=os.environ.get("LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
 )
 logger = logging.getLogger("nobs")

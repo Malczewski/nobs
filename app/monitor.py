@@ -143,12 +143,15 @@ class ChannelMonitor:
         return self._client.run_until_disconnected()
 
     async def _on_new_message(self, event: events.NewMessage.Event) -> None:
+        msg_id = f"{event.message.chat_id}:{event.message.id}"
+        logger.info("Received message %s", msg_id)
         chat = await event.get_chat()
         pending = self._prepare(event.message, chat)
         if pending is None:
             return
         async with self._pending_lock:
             self._pending.append(pending)
+            logger.info("Message %s queued (pending=%d)", msg_id, len(self._pending))
 
     async def _flush_loop(self) -> None:
         while True:
@@ -209,20 +212,24 @@ class ChannelMonitor:
         """
         msg_id = f"{message.chat_id}:{message.id}"
         if self._store.is_seen(DEDUP_NAMESPACE, msg_id):
+            logger.info("Message %s already seen, dropping", msg_id)
             return None
 
         text = message.message or ""
         if not text.strip():
             # No text/caption to evaluate (pure media/sticker). Mark seen and skip.
+            logger.info("Message %s has no text, dropping", msg_id)
             self._store.mark_seen(DEDUP_NAMESPACE, msg_id)
             return None
 
         config = self._config_loader.get().monitor
         if not config.enabled:
+            logger.info("Message %s dropped: monitor disabled", msg_id)
             return None
 
         text = _strip_patterns(text, config.strip_patterns)
         if not text or _matches_skip_keyword(text, config.skip_keywords):
+            logger.info("Message %s dropped by skip_keywords/strip_patterns", msg_id)
             self._store.mark_seen(DEDUP_NAMESPACE, msg_id)
             return None
 
