@@ -15,6 +15,7 @@ import time
 from dataclasses import dataclass
 
 import feedparser
+from google.api_core import exceptions as gexc
 
 from .config import ConfigLoader, Source
 from .gemini import GeminiClient
@@ -173,6 +174,7 @@ async def run_digest(
     logger.info("Running digest across %d sources", len(config.sources))
 
     errors: list[str] = []
+    rate_limited = False
     posted = 0
     for source in config.sources:
         try:
@@ -190,14 +192,17 @@ async def run_digest(
         except Exception as exc:  # noqa: BLE001 - collect & report per source
             logger.exception("Source failed: %s", source.label)
             errors.append(f"{source.label or source.url}: {exc}")
+            if isinstance(exc, (gexc.ResourceExhausted, gexc.TooManyRequests)):
+                rate_limited = True
 
     logger.info("Digest complete: %d messages posted, %d errors", posted, len(errors))
     if errors:
         # Surface partial failures but don't crash the whole run.
-        raise DigestPartialFailure(errors)
+        raise DigestPartialFailure(errors, rate_limited=rate_limited)
 
 
 class DigestPartialFailure(RuntimeError):
-    def __init__(self, errors: list[str]):
+    def __init__(self, errors: list[str], *, rate_limited: bool = False):
         self.errors = errors
+        self.rate_limited = rate_limited
         super().__init__("; ".join(errors))

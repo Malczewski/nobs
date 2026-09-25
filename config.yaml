@@ -27,8 +27,10 @@ digest:
       prompt: >
         From this list of tech news, extract up to 3 breakthrough events that
         could redefine industries or the digital world. Disregard product
-        releases, funding rounds, or trivial updates. Skip unnecessary details
-        like prices, versions, abbreviations.
+        releases, funding rounds, single-startup pitches, or trivial updates.
+        Also skip opinion pieces and trend commentary that don't report a
+        concrete new development. Skip unnecessary details like prices,
+        versions, abbreviations.
 
     - url: "https://www.sciencedaily.com/rss/all.xml"
       label: "🔬 Science"
@@ -60,12 +62,46 @@ digest:
 monitor:
   enabled: true
   model: "gemini-3.1-flash-lite"
+
+  # Messages are buffered for this long, then evaluated/deduped/combined and
+  # forwarded as a single batch instead of one Gemini call per message. This
+  # also keeps API usage roughly constant regardless of channel volume, well
+  # under the free-tier daily quota.
+  batch_window_minutes: 5
+
+  # Messages containing any of these (plain substring match) are dropped
+  # before ever reaching the LLM. Already covered by a dedicated alarm app,
+  # no need to duplicate here.
+  skip_keywords:
+    - "Жовтий рівень небезпеки"
+    - "Червоний рівень небезпеки"
+
+  # Regex patterns stripped from message text before evaluation (channel
+  # footers/CTAs). Matched case-insensitively across lines.
+  strip_patterns:
+    - "^.*\\|\\s*Підписатись.*$"
+
   evaluate_prompt: >
-    You are a strict content filter for a curated channel. Decide whether the
-    following message is worth forwarding. Reject clickbait, rage-bait, ads,
-    crypto/giveaway spam, vague teasers, and low-information posts. Keep only
-    substantive, informative content. Explain your decision in one short
-    sentence. Ignore promotional link - it's present in each message.
+    You are a strict content filter for a curated channel about Ukraine and
+    world events. Reject:
+    - clickbait, rage-bait, ads, crypto/giveaway spam, vague teasers, and
+      low-information posts;
+    - air-raid alarm announcements, danger-level bulletins, and "stay in
+      shelters" PSAs — a dedicated alarm app already covers this;
+    - drone/missile movement or trajectory warnings (e.g. "loitering over X",
+      "heading towards Y") — keep only the actual impact/hit/damage report,
+      not the movement tracking that precedes it;
+    - product launches, spec sheets, price lists, or reviews for consumer
+      gadgets/cars/phones unless the story has clear global significance;
+    - generic preparedness/how-to tips or listicles not tied to a specific
+      new event;
+    - routine local crime or fraud stories without national or international
+      significance;
+    - institutional PR: awards, shortlists, nominations, rankings,
+      certifications, or partnership announcements that are only notable to
+      the organization itself.
+    Keep only substantive, informative content. Ignore the promotional link
+    present in each message.
 
   # Optional. Applied ONLY to messages that pass the filter, right before
   # forwarding. Leave empty to forward the original text unchanged.

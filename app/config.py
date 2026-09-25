@@ -54,6 +54,15 @@ class MonitorConfig:
     # Optional: rewrite kept messages into a more useful form before forwarding.
     # If empty, the original message text is forwarded unchanged.
     transform_prompt: str = ""
+    # Messages containing any of these (plain substring match) are dropped
+    # before ever reaching the LLM.
+    skip_keywords: list[str] = field(default_factory=list)
+    # Regex patterns removed from message text before evaluation (e.g. channel
+    # footers/CTAs). Matched with re.MULTILINE | re.IGNORECASE.
+    strip_patterns: list[str] = field(default_factory=list)
+    # Messages are buffered for this long, then evaluated/deduped/forwarded as
+    # one batch instead of one Gemini call per message.
+    batch_window_minutes: float = 5.0
 
 
 @dataclass
@@ -92,6 +101,9 @@ class AppConfig:
             model=str(monitor_raw.get("model", "gemini-3.5-flash")),
             evaluate_prompt=str(monitor_raw.get("evaluate_prompt", "")),
             transform_prompt=str(monitor_raw.get("transform_prompt", "")),
+            skip_keywords=[str(k) for k in (monitor_raw.get("skip_keywords", []) or [])],
+            strip_patterns=[str(p) for p in (monitor_raw.get("strip_patterns", []) or [])],
+            batch_window_minutes=float(monitor_raw.get("batch_window_minutes", 5.0)),
         )
         return cls(digest=digest, monitor=monitor)
 
