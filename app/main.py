@@ -4,13 +4,16 @@ Runs both purposes in a single asyncio event loop:
   * APScheduler (AsyncIOScheduler) fires the daily digest.
   * Telethon's client owns the loop via run_until_disconnected().
 
-If the daily digest fails, an alert is sent to the channel.
+If the daily digest fails on a rate limit, it's retried once after an hour
+before alerting; any other failure (or a second rate-limited failure) alerts
+the channel immediately.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -25,10 +28,14 @@ from .storage import SeenStore
 from .telegram_bot import Publisher
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=os.environ.get("LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
 )
 logger = logging.getLogger("nobs")
+
+# If the digest fails on a rate limit, wait this long and try once more before
+# alerting, since free-tier per-minute throttling can clear well within an hour.
+RATE_LIMIT_RETRY_SECONDS = 3600
 
 
 async def _run_digest_job(
@@ -37,6 +44,8 @@ async def _run_digest_job(
     store: SeenStore,
     publisher: Publisher,
     channel_id: str,
+    *,
+    is_retry: bool = False,
 ) -> None:
     try:
         await run_digest(
@@ -47,6 +56,16 @@ async def _run_digest_job(
             channel_id=channel_id,
         )
     except Exception as exc:  # noqa: BLE001 - report any failure to the channel
+        if getattr(exc, "rate_limited", False) and not is_retry:
+            logger.warning(
+                "Daily digest hit a rate limit; retrying once in %ds",
+                RATE_LIMIT_RETRY_SECONDS,
+            )
+            await asyncio.sleep(RATE_LIMIT_RETRY_SECONDS)
+            await _run_digest_job(
+                config_loader, gemini, store, publisher, channel_id, is_retry=True
+            )
+            return
         logger.exception("Daily digest failed")
         try:
             await publisher.send_plain(
