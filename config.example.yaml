@@ -46,6 +46,7 @@ digest:
 
 monitor:
   enabled: true
+  language: "Ukrainian"   # forwarded text is always translated to this language
   model: "gemini-3.5-flash"
   evaluate_prompt: >
     You are a strict content filter for a curated channel. Decide whether the
@@ -59,5 +60,5 @@ monitor:
   transform_prompt: >
     Rewrite this message into a concise, useful note. Strip filler, hype,
     emojis, hashtags, calls to action, self-promotion and "subscribe" lines.
-    Keep the core facts, names, numbers and any links intact. Preserve the
-    original language. Output only the cleaned-up text.
+    Keep the core facts, names, numbers and any links intact. Output only
+    the cleaned-up text.

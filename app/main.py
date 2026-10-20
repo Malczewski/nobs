@@ -21,7 +21,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from .config import ConfigLoader
 from .digest import run_digest
-from .gemini import GeminiClient
+from .gemini import GeminiClient, describe_error
 from .monitor import ChannelMonitor
 from .settings import Settings
 from .storage import SeenStore
@@ -36,6 +36,13 @@ logger = logging.getLogger("nobs")
 # If the digest fails on a rate limit, wait this long and try once more before
 # alerting, since free-tier per-minute throttling can clear well within an hour.
 RATE_LIMIT_RETRY_SECONDS = 3600
+
+
+def _alert_text(exc: Exception) -> str:
+    errors = getattr(exc, "errors", None)
+    if errors:
+        return "\n".join(f"• {line}" for line in errors)
+    return describe_error(exc)
 
 
 async def _run_digest_job(
@@ -66,10 +73,14 @@ async def _run_digest_job(
                 config_loader, gemini, store, publisher, channel_id, is_retry=True
             )
             return
-        logger.exception("Daily digest failed")
+        # Quota failures are already described in plain words; skip the traceback.
+        logger.error(
+            "Daily digest failed: %s", _alert_text(exc),
+            exc_info=not getattr(exc, "rate_limited", False),
+        )
         try:
             await publisher.send_plain(
-                channel_id, f"⚠️ Daily digest failed:\n{exc}"
+                channel_id, f"⚠️ Daily digest failed:\n{_alert_text(exc)}"
             )
         except Exception:  # noqa: BLE001
             logger.exception("Failed to send failure alert")

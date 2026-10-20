@@ -18,7 +18,7 @@ import feedparser
 from google.api_core import exceptions as gexc
 
 from .config import ConfigLoader, Source
-from .gemini import GeminiClient
+from .gemini import GeminiClient, describe_error
 from .storage import SeenStore
 from .telegram_bot import Publisher
 
@@ -139,16 +139,17 @@ async def process_source(
 ) -> str | None:
     entries = await asyncio.to_thread(fetch_feed, source)
     fresh = [e for e in entries if not store.is_seen(DEDUP_NAMESPACE, e.entry_id)]
+    logger.info(
+        "[%s] %d fetched, %d already seen, %d fresh",
+        source.label, len(entries), len(entries) - len(fresh), len(fresh),
+    )
     if not fresh:
         logger.info("[%s] no fresh entries", source.label)
         return None
 
     prompt = _build_prompt(source, language, summarize_prompt, fresh)
-    try:
-        items = await gemini.generate_json(model, prompt)
-    except Exception:
-        logger.exception("[%s] Gemini summarization failed", source.label)
-        raise
+    # Failures are logged once by run_digest, not here.
+    items = await gemini.generate_json(model, prompt, label=f"digest:{source.label}")
 
     # Mark all fetched entries as seen regardless of whether the model kept them,
     # so we don't reconsider the same items tomorrow.
@@ -158,6 +159,7 @@ async def process_source(
         logger.info("[%s] model returned nothing notable", source.label)
         return None
 
+    logger.info("[%s] model kept %d of %d item(s)", source.label, len(items), len(fresh))
     return _render_message(source.label, items)
 
 
@@ -173,7 +175,8 @@ async def run_digest(
     config = config_loader.get(force=True).digest
     logger.info("Running digest across %d sources", len(config.sources))
 
-    errors: list[str] = []
+    started = time.monotonic()
+    failures: list[tuple[str, str]] = []
     rate_limited = False
     posted = 0
     for source in config.sources:
@@ -190,15 +193,29 @@ async def run_digest(
                 await publisher.send(channel_id, message, disable_preview=True)
                 posted += 1
         except Exception as exc:  # noqa: BLE001 - collect & report per source
-            logger.exception("Source failed: %s", source.label)
-            errors.append(f"{source.label or source.url}: {exc}")
             if isinstance(exc, (gexc.ResourceExhausted, gexc.TooManyRequests)):
                 rate_limited = True
+                # The message is already readable; a traceback adds nothing.
+                logger.error("Source failed: %s: %s", source.label, describe_error(exc))
+            else:
+                logger.exception("Source failed: %s", source.label)
+            failures.append((source.label or source.url, describe_error(exc)))
 
-    logger.info("Digest complete: %d messages posted, %d errors", posted, len(errors))
-    if errors:
+    logger.info(
+        "Digest complete in %.0fs: %d messages posted, %d errors",
+        time.monotonic() - started, posted, len(failures),
+    )
+    if failures:
         # Surface partial failures but don't crash the whole run.
-        raise DigestPartialFailure(errors, rate_limited=rate_limited)
+        raise DigestPartialFailure(_group_failures(failures), rate_limited=rate_limited)
+
+
+def _group_failures(failures: list[tuple[str, str]]) -> list[str]:
+    """One line per distinct reason, so a shared quota error isn't repeated per source."""
+    grouped: dict[str, list[str]] = {}
+    for label, reason in failures:
+        grouped.setdefault(reason, []).append(label)
+    return [f"{', '.join(labels)}: {reason}" for reason, labels in grouped.items()]
 
 
 class DigestPartialFailure(RuntimeError):

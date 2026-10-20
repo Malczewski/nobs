@@ -61,6 +61,11 @@ def test_matches_skip_keyword_ignores_blank_entries():
     assert not mon._matches_skip_keyword("text", ["", None])  # type: ignore[list-item]
 
 
+def test_build_batch_prompt_requires_configured_language():
+    prompt = mon._build_batch_prompt("EVAL", "TRANSFORM", [PendingMessage(text="Hi", link=None)], "Ukrainian")
+    assert "MUST be written in Ukrainian" in prompt
+
+
 def test_build_batch_prompt_numbers_messages():
     pending = [
         PendingMessage(text="First", link="http://a"),
@@ -84,6 +89,7 @@ class _FakeMessage:
     id: int
     message: str
     date: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    media: object = None
 
 
 @dataclass

@@ -35,7 +35,7 @@ class FakeGemini:
         """Queue a return value, or an exception instance to be raised."""
         self._results.append(result)
 
-    async def generate_json(self, model: str, prompt: str) -> Any:
+    async def generate_json(self, model: str, prompt: str, label: str = "") -> Any:
         self.calls.append((model, prompt))
         result = self._results.pop(0)
         if isinstance(result, BaseException):

@@ -123,3 +123,24 @@ def test_config_loader_refetches_after_ttl_expires(monkeypatch):
     loader.get()
 
     assert fake_client.bucket_calls == 2
+
+
+def test_config_load_logs_only_when_content_changes(caplog):
+    loader = ConfigLoader.__new__(ConfigLoader)  # skip the GCS client
+    loader._bucket_name, loader._object_path = "b", "config.yaml"
+    loader._cached, loader._last_text = None, None
+
+    def load(text: str):
+        config = AppConfig.from_dict({"monitor": {"model": text}})
+        loader._log_load(text, config)
+        loader._cached = config
+
+    with caplog.at_level("INFO", logger="app.config"):
+        load("m1")
+        load("m1")
+        load("m2")
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert len(messages) == 2  # unchanged re-check is silent at INFO
+    assert "Loaded config" in messages[0]
+    assert "monitor.model" in messages[1]

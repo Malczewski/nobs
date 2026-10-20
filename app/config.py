@@ -13,6 +13,7 @@ fetch fresh.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
 import threading
@@ -50,6 +51,8 @@ class DigestConfig:
 class MonitorConfig:
     enabled: bool = True
     model: str = "gemini-3.5-flash"
+    # Forwarded text is always written in this language, whatever the source uses.
+    language: str = "Ukrainian"
     evaluate_prompt: str = ""
     # Optional: rewrite kept messages into a more useful form before forwarding.
     # If empty, the original message text is forwarded unchanged.
@@ -99,6 +102,7 @@ class AppConfig:
         monitor = MonitorConfig(
             enabled=bool(monitor_raw.get("enabled", True)),
             model=str(monitor_raw.get("model", "gemini-3.5-flash")),
+            language=str(monitor_raw.get("language", "Ukrainian")),
             evaluate_prompt=str(monitor_raw.get("evaluate_prompt", "")),
             transform_prompt=str(monitor_raw.get("transform_prompt", "")),
             skip_keywords=[str(k) for k in (monitor_raw.get("skip_keywords", []) or [])],
@@ -106,6 +110,18 @@ class AppConfig:
             batch_window_minutes=float(monitor_raw.get("batch_window_minutes", 5.0)),
         )
         return cls(digest=digest, monitor=monitor)
+
+
+def _changed_fields(old: Optional[AppConfig], new: AppConfig) -> list[str]:
+    """Names (not values: prompts are long) of the config fields that differ."""
+    if old is None:
+        return []
+    changed = []
+    for section in ("digest", "monitor"):
+        before = dataclasses.asdict(getattr(old, section))
+        after = dataclasses.asdict(getattr(new, section))
+        changed += [f"{section}.{key}" for key in after if before.get(key) != after[key]]
+    return changed
 
 
 class ConfigLoader:
@@ -123,16 +139,28 @@ class ConfigLoader:
         self._lock = threading.Lock()
         self._cached: Optional[AppConfig] = None
         self._fetched_at: float = 0.0
+        self._last_text: Optional[str] = None
 
     def _fetch(self) -> AppConfig:
         bucket = self._client.bucket(self._bucket_name)
         blob = bucket.blob(self._object_path)
         text = blob.download_as_text()
         raw = yaml.safe_load(text) or {}
-        logger.info(
-            "Loaded config from gs://%s/%s", self._bucket_name, self._object_path
-        )
-        return AppConfig.from_dict(raw)
+        config = AppConfig.from_dict(raw)
+        self._log_load(text, config)
+        return config
+
+    def _log_load(self, text: str, config: AppConfig) -> None:
+        """Log at INFO only on first load or when the content changed."""
+        where = f"gs://{self._bucket_name}/{self._object_path}"
+        if self._last_text is None:
+            logger.info("Loaded config from %s", where)
+        elif text != self._last_text:
+            changed = _changed_fields(self._cached, config)
+            logger.info("Config changed in %s: %s", where, ", ".join(changed) or "formatting only")
+        else:
+            logger.debug("Config re-checked, unchanged")
+        self._last_text = text
 
     def get(self, *, force: bool = False) -> AppConfig:
         now = time.monotonic()

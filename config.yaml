@@ -3,7 +3,7 @@
 
 digest:
   schedule:
-    hour: 8          # 24h clock, in the timezone below
+    hour: 9          # 24h clock, in the timezone below
     minute: 13
     timezone: "Europe/Kyiv"
   language: "Ukrainian"   # all output is translated to this language
@@ -61,6 +61,7 @@ digest:
 
 monitor:
   enabled: true
+  language: "Ukrainian"   # forwarded text is always translated to this language
   model: "gemini-3.1-flash-lite"
 
   # Messages are buffered for this long, then evaluated/deduped/combined and
@@ -108,5 +109,5 @@ monitor:
   transform_prompt: >
     Rewrite this message into a concise, useful note. Strip filler, hype,
     emojis, hashtags, calls to action, self-promotion and "subscribe" lines.
-    Keep the core facts, names, numbers and any links intact. Preserve the
-    original language. Output only the cleaned-up text.
+    Keep the core facts, names, numbers and any links intact. Output only
+    the cleaned-up text.

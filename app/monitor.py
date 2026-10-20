@@ -21,11 +21,12 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+from google.api_core import exceptions as gexc
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 
 from .config import ConfigLoader
-from .gemini import GeminiClient
+from .gemini import GeminiClient, describe_error
 from .storage import SeenStore
 from .telegram_bot import Publisher
 
@@ -42,6 +43,7 @@ BACKFILL_HOURS = 12
 class PendingMessage:
     text: str
     link: str | None
+    msg_id: str = ""
 
 
 def _resolve_source(value: str):
@@ -67,7 +69,9 @@ def _matches_skip_keyword(text: str, keywords: list[str]) -> bool:
     return any(keyword in text for keyword in keywords if keyword)
 
 
-def _build_batch_prompt(evaluate_prompt: str, transform_prompt: str, pending: list[PendingMessage]) -> str:
+def _build_batch_prompt(
+    evaluate_prompt: str, transform_prompt: str, pending: list[PendingMessage], language: str = "Ukrainian"
+) -> str:
     items_block = "\n\n".join(f"[{i}] {m.text}" for i, m in enumerate(pending))
     return (
         f"{evaluate_prompt}\n\n"
@@ -78,6 +82,10 @@ def _build_batch_prompt(evaluate_prompt: str, transform_prompt: str, pending: li
         "about the same attack) into a single entry — render it as a short "
         "bullet list if it covers multiple distinct facts. Drop everything that "
         "doesn't pass the filter.\n\n"
+        f"The \"text\" of every entry MUST be written in {language}, even if the "
+        f"original message is in another language: translate it. Keep proper "
+        f"nouns and links unchanged. This rule overrides any instruction above "
+        f"about the language.\n\n"
         "Respond with ONLY a JSON array of objects, each with exactly:\n"
         '  "text": the rewritten/combined message text (no preamble, no labels),\n'
         '  "sources": a list of the integer indices it was built from.\n'
@@ -144,7 +152,10 @@ class ChannelMonitor:
 
     async def _on_new_message(self, event: events.NewMessage.Event) -> None:
         msg_id = f"{event.message.chat_id}:{event.message.id}"
-        logger.info("Received message %s", msg_id)
+        logger.info(
+            "Received message %s (chars=%d, media=%s)",
+            msg_id, len(event.message.message or ""), type(event.message.media).__name__,
+        )
         chat = await event.get_chat()
         pending = self._prepare(event.message, chat)
         if pending is None:
@@ -164,8 +175,15 @@ class ChannelMonitor:
             batch, self._pending = self._pending, []
         if not batch:
             return
+        logger.info(
+            "Flushing batch: %d message(s), %d chars",
+            len(batch), sum(len(m.text) for m in batch),
+        )
         config = self._config_loader.get().monitor
-        await self._process_batch(config.model, config.evaluate_prompt, config.transform_prompt, batch)
+        await self._process_batch(
+            config.model, config.evaluate_prompt, config.transform_prompt, batch,
+            language=config.language,
+        )
 
     async def _backfill(self, hours: int) -> None:
         """Process messages from the last `hours` hours, oldest first.
@@ -200,7 +218,10 @@ class ChannelMonitor:
                 batch.append(pending)
         if batch:
             config = self._config_loader.get().monitor
-            await self._process_batch(config.model, config.evaluate_prompt, config.transform_prompt, batch)
+            await self._process_batch(
+            config.model, config.evaluate_prompt, config.transform_prompt, batch,
+            language=config.language,
+        )
         logger.info("Backfill: complete")
 
     def _prepare(self, message, chat) -> PendingMessage | None:
@@ -235,18 +256,34 @@ class ChannelMonitor:
 
         self._store.mark_seen(DEDUP_NAMESPACE, msg_id)
         link = self._message_link(chat, message.chat_id, message.id)
-        return PendingMessage(text=text, link=link)
+        return PendingMessage(text=text, link=link, msg_id=msg_id)
 
     async def _process_batch(
-        self, model: str, evaluate_prompt: str, transform_prompt: str, pending: list[PendingMessage]
+        self,
+        model: str,
+        evaluate_prompt: str,
+        transform_prompt: str,
+        pending: list[PendingMessage],
+        language: str = "Ukrainian",
     ) -> None:
-        prompt = _build_batch_prompt(evaluate_prompt, transform_prompt, pending)
+        prompt = _build_batch_prompt(evaluate_prompt, transform_prompt, pending, language)
+        ids = [m.msg_id for m in pending]
         try:
-            items = await self._gemini.generate_json(model, prompt)
-        except Exception:
+            items = await self._gemini.generate_json(
+                model, prompt, label=f"monitor(n={len(pending)})"
+            )
+        except Exception as exc:
             # Messages are already marked seen (see _prepare), so a failed batch
             # is dropped rather than retried — consistent with prior behavior.
-            logger.exception("Batch evaluation failed for %d message(s)", len(pending))
+            if isinstance(exc, (gexc.ResourceExhausted, gexc.TooManyRequests)):
+                logger.error(
+                    "Batch evaluation failed, %d message(s) lost %s: %s",
+                    len(pending), ids, describe_error(exc),
+                )
+            else:
+                logger.exception(
+                    "Batch evaluation failed, %d message(s) lost %s", len(pending), ids
+                )
             return
 
         if not isinstance(items, list):
@@ -254,6 +291,7 @@ class ChannelMonitor:
             return
 
         kept = 0
+        used: set[int] = set()
         for item in items:
             if not isinstance(item, dict):
                 continue
@@ -265,9 +303,14 @@ class ChannelMonitor:
                 for idx in (item.get("sources") or [])
                 if isinstance(idx, int) and 0 <= idx < len(pending) and pending[idx].link
             ]
+            used.update(i for i in (item.get("sources") or []) if isinstance(i, int))
             await self._forward(text, links=links)
             kept += 1
-        logger.info("Batch: %d message(s) in, %d forwarded", len(pending), kept)
+        dropped = [m.msg_id for i, m in enumerate(pending) if i not in used]
+        logger.info(
+            "Batch: %d message(s) in, %d forwarded; not used by the model: %s",
+            len(pending), kept, dropped,
+        )
 
     def _message_link(self, chat, chat_id, msg_id: int) -> str | None:
         """Build a public/private t.me link to the original message."""

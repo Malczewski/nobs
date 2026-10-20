@@ -161,3 +161,48 @@ async def test_generate_json_parses_response(monkeypatch):
     result = await client.generate_json("model", "prompt")
 
     assert result == [{"title": "x"}]
+
+
+# ---------------------------------------------------------------------------
+# Friendly quota errors + local usage counting
+# ---------------------------------------------------------------------------
+
+_DAILY_429 = (
+    "429 You exceeded your current quota. * Quota exceeded for metric: "
+    "generate_content_free_tier_requests, limit: 500, model: gemini-x "
+    'violations { quota_id: "GenerateRequestsPerDayPerProjectPerModel-FreeTier" '
+    "quota_value: 500 } retry_delay { seconds: 2631 }"
+)
+
+
+async def test_daily_quota_raises_readable_error(monkeypatch):
+    model = _FakeModel([gexc.ResourceExhausted(_DAILY_429)])
+    monkeypatch.setattr(gm.genai, "GenerativeModel", lambda name: model)
+
+    client = gm.GeminiClient("fake-key")
+    with pytest.raises(gm.GeminiQuotaError) as exc_info:
+        await client.generate("gemini-x", "prompt")
+
+    message = str(exc_info.value)
+    assert exc_info.value.kind == "per_day"
+    assert "daily request quota" in message and "500/day" in message
+    assert "violations" not in message and "retry_delay" not in message
+    assert "1 request(s) today" in message  # failed attempts are counted too
+
+
+def test_describe_error_handles_raw_quota_and_other_errors():
+    assert "daily request quota" in gm.describe_error(gexc.ResourceExhausted(_DAILY_429))
+    assert gm.describe_error(ValueError("bad\nthing")) == "ValueError: bad thing"
+
+
+async def test_successful_request_is_logged_with_local_count(monkeypatch, caplog):
+    model = _FakeModel(["a", "b"])
+    monkeypatch.setattr(gm.genai, "GenerativeModel", lambda name: model)
+    client = gm.GeminiClient("fake-key")
+
+    with caplog.at_level("INFO", logger="app.gemini"):
+        await client.generate("gemini-x", "prompt", label="t")
+        await client.generate("gemini-x", "prompt", label="t")
+
+    assert "label=t" in caplog.text
+    assert "local_today=2" in caplog.text
