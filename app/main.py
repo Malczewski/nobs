@@ -31,6 +31,8 @@ logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
 )
+# httpx logs full request URLs at INFO, and Telegram's contain the bot token.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("nobs")
 
 # If the digest fails on a rate limit, wait this long and try once more before

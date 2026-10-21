@@ -109,6 +109,7 @@ def make_monitor(config_loader, gemini=None, store=None, publisher=None) -> Chan
     monitor._flush_task = None
     monitor._pending = []
     monitor._pending_lock = asyncio.Lock()
+    monitor._paused_until = 0.0
     return monitor
 
 
@@ -248,6 +249,41 @@ async def test_process_batch_swallows_gemini_failure(monitor, fake_gemini, fake_
     await monitor._process_batch("model", "eval", "transform", pending)  # must not raise
 
     assert fake_publisher.sent == []
+
+
+async def test_failed_batch_is_requeued_ahead_of_newer_messages(monitor, fake_gemini):
+    older = PendingMessage(text="Old", link=None, msg_id="1")
+    newer = PendingMessage(text="New", link=None, msg_id="2")
+    monitor._pending = [newer]
+    fake_gemini.queue(RuntimeError("gemini is down"))
+
+    await monitor._process_batch("model", "eval", "transform", [older])
+
+    assert [m.msg_id for m in monitor._pending] == ["1", "2"]
+    assert older.attempts == 1
+
+
+async def test_message_is_given_up_after_max_attempts(monitor, fake_gemini):
+    stuck = PendingMessage(text="Raw", link=None, attempts=mon.MAX_FLUSH_ATTEMPTS - 1)
+    fake_gemini.queue(RuntimeError("gemini is down"))
+
+    await monitor._process_batch("model", "eval", "transform", [stuck])
+
+    assert monitor._pending == []
+
+
+async def test_daily_quota_pauses_flushing_but_keeps_messages(monitor, fake_gemini):
+    from app.gemini import GeminiQuotaError
+
+    monitor._pending = [PendingMessage(text="Raw", link=None)]
+    fake_gemini.queue(GeminiQuotaError("used up", kind="per_day", retry_after=3600))
+
+    await monitor._flush()  # fails, re-queues, pauses
+    assert len(monitor._pending) == 1
+
+    await monitor._flush()  # paused: no new Gemini call
+    assert len(fake_gemini.calls) == 1
+    assert len(monitor._pending) == 1
 
 
 async def test_process_batch_handles_non_list_response(monitor, fake_gemini, fake_publisher):

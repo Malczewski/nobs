@@ -4,7 +4,7 @@
 digest:
   schedule:
     hour: 9          # 24h clock, in the timezone below
-    minute: 13
+    minute: 14
     timezone: "Europe/Kyiv"
   language: "Ukrainian"   # all output is translated to this language
   model: "gemini-3.1-flash-lite"

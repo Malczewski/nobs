@@ -18,7 +18,8 @@ import asyncio
 import html
 import logging
 import re
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from google.api_core import exceptions as gexc
@@ -38,12 +39,19 @@ DEDUP_NAMESPACE = "tg_monitor"
 # while down. Dedup (SeenStore) makes this idempotent across restarts.
 BACKFILL_HOURS = 12
 
+# A batch that fails (Gemini down / quota) is put back in the queue for the next
+# flush. A message is given up on after this many failed flushes or this age.
+MAX_FLUSH_ATTEMPTS = 6
+MAX_PENDING_AGE_SECONDS = BACKFILL_HOURS * 3600
+
 
 @dataclass
 class PendingMessage:
     text: str
     link: str | None
     msg_id: str = ""
+    attempts: int = 0
+    queued_at: float = field(default_factory=time.monotonic)
 
 
 def _resolve_source(value: str):
@@ -120,6 +128,8 @@ class ChannelMonitor:
         self._flush_task: asyncio.Task | None = None
         self._pending: list[PendingMessage] = []
         self._pending_lock = asyncio.Lock()
+        # While the daily Gemini quota is used up, don't flush (every try fails).
+        self._paused_until = 0.0
 
     async def start(self) -> None:
         await self._client.start()  # uses the StringSession; non-interactive
@@ -171,6 +181,13 @@ class ChannelMonitor:
             await self._flush()
 
     async def _flush(self) -> None:
+        wait = self._paused_until - time.monotonic()
+        if wait > 0:
+            logger.info(
+                "Flush skipped: Gemini daily quota is used up; %d message(s) kept, resuming in %dm",
+                len(self._pending), wait // 60,
+            )
+            return
         async with self._pending_lock:
             batch, self._pending = self._pending, []
         if not batch:
@@ -276,14 +293,10 @@ class ChannelMonitor:
             # Messages are already marked seen (see _prepare), so a failed batch
             # is dropped rather than retried — consistent with prior behavior.
             if isinstance(exc, (gexc.ResourceExhausted, gexc.TooManyRequests)):
-                logger.error(
-                    "Batch evaluation failed, %d message(s) lost %s: %s",
-                    len(pending), ids, describe_error(exc),
-                )
+                logger.error("Batch evaluation failed %s: %s", ids, describe_error(exc))
             else:
-                logger.exception(
-                    "Batch evaluation failed, %d message(s) lost %s", len(pending), ids
-                )
+                logger.exception("Batch evaluation failed %s", ids)
+            await self._requeue(pending, exc)
             return
 
         if not isinstance(items, list):
@@ -310,6 +323,26 @@ class ChannelMonitor:
         logger.info(
             "Batch: %d message(s) in, %d forwarded; not used by the model: %s",
             len(pending), kept, dropped,
+        )
+
+    async def _requeue(self, pending: list[PendingMessage], exc: Exception) -> None:
+        """Put a failed batch back at the front of the queue for the next flush."""
+        now = time.monotonic()
+        keep, given_up = [], []
+        for message in pending:
+            message.attempts += 1
+            too_old = now - message.queued_at > MAX_PENDING_AGE_SECONDS
+            if message.attempts >= MAX_FLUSH_ATTEMPTS or too_old:
+                given_up.append(message.msg_id)
+            else:
+                keep.append(message)
+        async with self._pending_lock:
+            self._pending = keep + self._pending
+        if getattr(exc, "kind", None) == "per_day" and getattr(exc, "retry_after", None):
+            self._paused_until = now + exc.retry_after
+        logger.warning(
+            "Batch kept for the next flush: %d message(s) re-queued, %d given up %s",
+            len(keep), len(given_up), given_up,
         )
 
     def _message_link(self, chat, chat_id, msg_id: int) -> str | None:

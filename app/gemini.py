@@ -42,7 +42,7 @@ _RETRYABLE = (
 # ~5 requests/min, so retries need to wait on the order of tens of seconds.
 _DEFAULT_RETRY_INITIAL = 15.0
 _DEFAULT_RETRY_MAX = 300.0
-_RETRY_ATTEMPTS = 8
+_RETRY_ATTEMPTS = 4
 
 # Added to the server-suggested retry_delay so we don't retry a hair too early.
 _RETRY_BUFFER = 2.0
@@ -52,6 +52,11 @@ _RETRY_BUFFER = 2.0
 # <=4 requests in any rolling 60s window, leaving margin for clock skew and the
 # occasional internal retry call (which does not pass through the throttle).
 _MIN_REQUEST_INTERVAL = 15.0
+
+# The SDK retries 503s inside one call for up to 600s, each retry a real API
+# request that our counter and quota can't see. We disable that (retry=None)
+# and retry ourselves, so one attempt is exactly one request.
+_REQUEST_TIMEOUT = 90.0
 
 # Hard ceiling on any single wait, so a bogus server hint can't stall us forever.
 _MAX_RETRY_WAIT = 300.0
@@ -162,10 +167,14 @@ def _quota_kind(exc: BaseException) -> str:
     return "other"
 
 
-def _until_quota_reset() -> str:
+def _seconds_until_quota_reset() -> float:
     now = datetime.now(_QUOTA_TZ)
     midnight = datetime.combine(now.date() + timedelta(days=1), dtime.min)
-    minutes = int((_QUOTA_TZ.localize(midnight) - now).total_seconds() // 60)
+    return (_QUOTA_TZ.localize(midnight) - now).total_seconds()
+
+
+def _until_quota_reset() -> str:
+    minutes = int(_seconds_until_quota_reset() // 60)
     return f"{minutes // 60}h {minutes % 60:02d}m"
 
 
@@ -176,10 +185,12 @@ class GeminiQuotaError(gexc.ResourceExhausted):
     working. The original error is chained as __cause__.
     """
 
-    def __init__(self, message: str, *, kind: str):
+    def __init__(self, message: str, *, kind: str, retry_after: float | None = None):
         super().__init__(message)
         self.message = message
         self.kind = kind
+        # Seconds until a new request can succeed (None if unknown).
+        self.retry_after = retry_after
 
     def __str__(self) -> str:
         return self.message
@@ -293,7 +304,9 @@ class GeminiClient:
         started = time.monotonic()
         base = f"label={label or '-'} model={model} attempt={attempt} prompt_chars={len(prompt)}"
         try:
-            response = genai.GenerativeModel(model).generate_content(prompt)
+            response = genai.GenerativeModel(model).generate_content(
+                prompt, request_options={"retry": None, "timeout": _REQUEST_TIMEOUT}
+            )
         except Exception as exc:
             today, last_minute = self._usage.record(model)
             elapsed = time.monotonic() - started
@@ -356,7 +369,13 @@ class GeminiClient:
             if isinstance(exc, GeminiQuotaError):
                 raise
             kind, message = _quota_message(exc, model, self._usage.today(model))
-            raise GeminiQuotaError(message, kind=kind) from exc
+            # +60s so we don't come back a hair before the reset.
+            retry_after = (
+                _seconds_until_quota_reset() + 60
+                if kind == "per_day"
+                else _quota_details(exc)["retry_after"]
+            )
+            raise GeminiQuotaError(message, kind=kind, retry_after=retry_after) from exc
 
     async def _throttle(self) -> None:
         async with self._rate_lock:

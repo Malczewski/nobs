@@ -93,8 +93,9 @@ class _FakeModel:
         self._responses = list(responses)
         self.calls = 0
 
-    def generate_content(self, prompt):
+    def generate_content(self, prompt, request_options=None):
         self.calls += 1
+        self.request_options = request_options
         result = self._responses.pop(0)
         if isinstance(result, BaseException):
             raise result
@@ -206,3 +207,14 @@ async def test_successful_request_is_logged_with_local_count(monkeypatch, caplog
 
     assert "label=t" in caplog.text
     assert "local_today=2" in caplog.text
+
+
+async def test_sdk_internal_retry_is_disabled(monkeypatch):
+    """Hidden SDK retries are extra API requests that burn quota unseen."""
+    model = _FakeModel(["ok"])
+    monkeypatch.setattr(gm.genai, "GenerativeModel", lambda name: model)
+
+    await gm.GeminiClient("fake-key").generate("model", "prompt")
+
+    assert model.request_options["retry"] is None
+    assert model.request_options["timeout"] == gm._REQUEST_TIMEOUT
